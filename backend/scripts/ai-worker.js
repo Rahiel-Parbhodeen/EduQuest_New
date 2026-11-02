@@ -19,6 +19,15 @@ const validExplanation = (value) => {
   return sentences.length >= 1 && sentences.length <= 2;
 };
 
+export const classifyProviderError = (detail) => {
+  if (detail === 'GENERATION_SOURCE_MISMATCH' || detail.includes('supporting text'))
+    return 'GENERATION_SOURCE_MISMATCH';
+  if (detail.includes('Not enough distinct')) return 'SOURCE_TOO_SHORT';
+  if (detail.includes('required') || detail.includes('Unknown AI_PROVIDER'))
+    return 'AI_NOT_CONFIGURED';
+  return 'AI_PROVIDER_ERROR';
+};
+
 export const validateAiOutput = (output) => {
   if (
     !output ||
@@ -110,7 +119,7 @@ const processJob = async (job) => {
         'content-type': 'application/json',
         'x-ai-service-token': aiServiceToken,
       },
-      signal: AbortSignal.timeout(180000),
+      signal: AbortSignal.timeout(300000),
       body: JSON.stringify({
         extracted_text: source.text,
         source_title: String(job.resource_title || 'Uploaded material').slice(
@@ -126,15 +135,7 @@ const processJob = async (job) => {
       try {
         detail = (await response.json()).detail || '';
       } catch {}
-      const code =
-        detail === 'GENERATION_SOURCE_MISMATCH'
-          ? 'GENERATION_SOURCE_MISMATCH'
-          : detail.includes('Not enough distinct')
-            ? 'SOURCE_TOO_SHORT'
-            : detail.includes('required') ||
-                detail.includes('Unknown AI_PROVIDER')
-              ? 'AI_NOT_CONFIGURED'
-              : 'AI_PROVIDER_ERROR';
+      const code = classifyProviderError(detail);
       throw new Error(code);
     }
     const output = await response.json();

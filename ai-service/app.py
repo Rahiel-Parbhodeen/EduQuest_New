@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from urllib.parse import urlparse
 from typing import Protocol
 from dotenv import load_dotenv
@@ -39,10 +40,10 @@ async def protect_service(request: Request, call_next):
     if not expected or not hmac.compare_digest(supplied, expected):
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     content_length = request.headers.get("content-length")
-    max_body = int(os.environ.get("AI_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+    max_body = int(os.environ.get("AI_MAX_BODY_BYTES", str(8 * 1024 * 1024)))
     if content_length and int(content_length) > max_body:
         return JSONResponse(status_code=413, content={"detail": "Request body is too large"})
-    timeout = float(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "180"))
+    timeout = float(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "300"))
     try:
         return await asyncio.wait_for(call_next(request), timeout=timeout)
     except asyncio.TimeoutError:
@@ -164,6 +165,109 @@ class OpenAIProvider:
         raise RuntimeError("AI generation failed") from None
 
 
+class GeminiProvider:
+    def __init__(self, client=None, model=None, api_key=None, max_requests=None, max_tokens=None, retries=2):
+        self.model = model or os.environ.get("GEMINI_MODEL") or os.environ.get("AI_MODEL")
+        if not self.model:
+            raise RuntimeError("GEMINI_MODEL is required when AI_PROVIDER=gemini")
+        key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            raise RuntimeError("GEMINI_API_KEY is required when AI_PROVIDER=gemini")
+        if client is None:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(float(os.environ.get("AI_TIMEOUT_SECONDS", "120")) * 1000)))
+        self.client = client
+        self.max_requests = max_requests if max_requests is not None else int(os.environ.get("AI_MAX_REQUESTS_PER_RUN", "20"))
+        self.max_tokens = max_tokens if max_tokens is not None else int(os.environ.get("AI_MAX_TOKENS", "4000"))
+        self.retries = retries
+        self.requests = 0
+
+    def generate_quiz(self, request: "QuizRequest") -> "QuizResponse":
+        if self.requests >= self.max_requests:
+            raise RuntimeError("AI request cap reached")
+        from google.genai import types
+        prompt = quiz_prompt(request)
+        response_schema = _gemini_response_schema()
+        last = None
+        for attempt in range(self.retries + 1):
+            if self.requests >= self.max_requests:
+                raise RuntimeError("AI request cap reached")
+            self.requests += 1
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=response_schema,
+                        temperature=0,
+                        max_output_tokens=self.max_tokens,
+                    ),
+                )
+                if not response.text:
+                    raise ValueError("Gemini returned an empty response")
+                return QuizResponse.model_validate_json(response.text)
+            except Exception as exc:
+                last = exc
+                retryable = getattr(exc, "code", getattr(exc, "status_code", None)) in {408, 429, 500, 502, 503, 504}
+                if attempt >= self.retries or not retryable:
+                    break
+                headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+                retry_after = headers.get("retry-after")
+                try:
+                    delay = min(15.0, max(0.0, float(retry_after))) if retry_after else min(8.0, 2.0 * (2 ** attempt))
+                except (TypeError, ValueError):
+                    delay = min(8.0, 2.0 * (2 ** attempt))
+                time.sleep(delay)
+        logger.warning("Gemini request failed after retries: %s", type(last).__name__)
+        raise RuntimeError("AI generation failed") from None
+
+
+def _gemini_response_schema():
+    """Convert EduQuest's Pydantic schema to Gemini's supported JSON schema subset."""
+    schema = QuizResponse.model_json_schema()
+    definitions = schema.get("$defs", {})
+    type_names = {
+        "object": "OBJECT",
+        "array": "ARRAY",
+        "string": "STRING",
+        "number": "NUMBER",
+        "integer": "INTEGER",
+        "boolean": "BOOLEAN",
+    }
+
+    def convert(node):
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if reference and reference.startswith("#/$defs/"):
+                node = definitions[reference.rsplit("/", 1)[-1]]
+            converted = {}
+            for key, value in node.items():
+                if key in {"$defs", "$ref", "title", "default", "exclusiveMinimum", "exclusiveMaximum"}:
+                    continue
+                if key == "properties" and isinstance(value, dict):
+                    converted[key] = {name: convert(property_schema) for name, property_schema in value.items()}
+                    continue
+                if key == "type" and isinstance(value, str):
+                    converted[key] = type_names.get(value, value.upper())
+                else:
+                    converted[key] = convert(value)
+            return converted
+        if isinstance(node, list):
+            return [convert(item) for item in node]
+        return node
+
+    result = convert(schema)
+    # Source linkage is mandatory for every AI draft even though the shared
+    # response model permits an empty excerpt for non-AI callers.
+    question_schema = result["properties"]["questions"]["items"]
+    required = question_schema.setdefault("required", [])
+    if "source_excerpt" not in required:
+        required.append("source_excerpt")
+    return result
+
+
 class OpenAICompatibleProvider(OpenAIProvider):
     def __init__(self, client=None, base_url=None, api_key=None, model=None, max_requests=None, max_tokens=None, retries=2, sleep=time.sleep):
         self.base_url = base_url or os.environ.get("AI_BASE_URL")
@@ -235,10 +339,12 @@ def provider() -> LLMProvider:
         return AnthropicProvider()
     if selected == "openai":
         return OpenAIProvider()
+    if selected == "gemini":
+        return GeminiProvider()
     if selected == "openai_compatible":
         return OpenAICompatibleProvider()
     if selected in {"mock","offline"}: return MockProvider()
-    raise RuntimeError("Unknown AI_PROVIDER. Choose mock, openai, anthropic or openai_compatible.")
+    raise RuntimeError("Unknown AI_PROVIDER. Choose mock, openai, anthropic, gemini or openai_compatible.")
 
 
 class Option(BaseModel):
@@ -308,6 +414,82 @@ class AnalysisResponse(BaseModel):
     summary: str
 
 
+def canonical_source_excerpt(candidate: str, source: str) -> str | None:
+    """Map a provider citation back to an exact source span.
+
+    Case, Unicode compatibility forms, and punctuation may differ in a model's
+    citation, but its ordered word tokens must form one contiguous source span.
+    The returned value is always copied from the original extracted material.
+    """
+    if not isinstance(candidate, str) or len(candidate.strip()) < 15:
+        return None
+    def word_tokens(value):
+        entries = []
+        for match in re.finditer(r"\w+", value, flags=re.UNICODE):
+            token = unicodedata.normalize("NFKC", match.group()).casefold()
+            if entries:
+                gap = value[entries[-1][2] : match.start()]
+                if re.fullmatch(r"[-\u2010\u2011\u00ad][ \t]*\r?\n[ \t]*", gap):
+                    previous = entries[-1]
+                    entries[-1] = (previous[0] + token, previous[1], match.end())
+                    continue
+            entries.append((token, match.start(), match.end()))
+        return entries
+
+    quote_matches = word_tokens(candidate)
+    if len(quote_matches) < 3:
+        return None
+    source_matches = word_tokens(source)
+    if len(source_matches) < len(quote_matches):
+        return None
+
+    pattern = [entry[0] for entry in quote_matches]
+    source_tokens = [entry[0] for entry in source_matches]
+
+    # KMP finds the ordered citation tokens in linear time, even for long guides.
+    prefix = [0] * len(pattern)
+    matched = 0
+    for index in range(1, len(pattern)):
+        while matched and pattern[index] != pattern[matched]:
+            matched = prefix[matched - 1]
+        if pattern[index] == pattern[matched]:
+            matched += 1
+        prefix[index] = matched
+
+    matched = 0
+    for index, token in enumerate(source_tokens):
+        while matched and token != pattern[matched]:
+            matched = prefix[matched - 1]
+        if token == pattern[matched]:
+            matched += 1
+        if matched == len(pattern):
+            first = index - len(pattern) + 1
+            excerpt = source[source_matches[first][1] : source_matches[index][2]]
+            return excerpt if len(excerpt) <= 1500 else None
+    return None
+
+
+
+
+def best_source_excerpt(question: str, source: str) -> str | None:
+    """Return an exact source sentence anchored by quiz content."""
+    stop_words = {"which", "what", "when", "where", "whose", "about", "from", "does", "with", "that", "this", "into", "your", "their", "they", "them", "than", "have", "has", "were", "will", "would", "could", "should", "complete", "statement", "material", "question", "following", "according", "based", "correct", "answer", "describe", "explain", "identify", "select", "choose", "consider", "regarding"}
+    terms = {t.casefold() for t in re.findall(r"[A-Za-z][A-Za-z0-9-]{3,}", question)} - stop_words
+    if not terms:
+        return None
+    spans = [m.group(0).strip() for m in re.finditer(r"[^.!?\n]+(?:[.!?]+|$)", source) if len(m.group(0).strip()) >= 30]
+    ranked = []
+    for span in spans:
+        words = {t.casefold() for t in re.findall(r"[A-Za-z][A-Za-z0-9-]{3,}", span)}
+        overlap = len(terms & words)
+        if overlap:
+            ranked.append((overlap / (len(words) ** 0.5), overlap, span[:1500]))
+    if not ranked:
+        return None
+    ranked.sort(reverse=True)
+    _, overlap, excerpt = ranked[0]
+    return excerpt if overlap >= 2 else None
+
 @app.post("/generate-quiz", response_model=QuizResponse)
 def generate_quiz(request: QuizRequest) -> QuizResponse:
     status=generation_status()
@@ -318,9 +500,18 @@ def generate_quiz(request: QuizRequest) -> QuizResponse:
         if len(result.questions) != request.question_count:
             raise RuntimeError("Provider returned the wrong number of questions; try a smaller request.")
         for question in result.questions:
-            quote=" ".join(question.source_excerpt.split())
-            if len(quote)<15 or quote not in " ".join(request.extracted_text.split()):
-                raise RuntimeError("GENERATION_SOURCE_MISMATCH")
+            excerpt = canonical_source_excerpt(question.source_excerpt, request.extracted_text)
+            if not excerpt:
+                correct_answers = " ".join(
+                    option.option_text for option in question.options if option.is_correct
+                )
+                citation_query = " ".join(
+                    [question.question_text, question.topic, question.explanation, correct_answers]
+                )
+                excerpt = best_source_excerpt(citation_query, request.extracted_text)
+            if not excerpt:
+                raise RuntimeError("Could not find supporting text in this document. Try a TXT export or upload a smaller section.")
+            question.source_excerpt = excerpt
         result.generation_mode="offline" if isinstance(provider(),MockProvider) else "live"
         result.source_sha256=hashlib.sha256(request.extracted_text.encode("utf-8")).hexdigest()
         result.source_characters=len(request.extracted_text)
@@ -346,7 +537,9 @@ def generation_status():
     selected=os.environ.get("AI_PROVIDER","mock").lower()
     if selected in {"mock","offline"}:
         return {"mode":"offline","configured":True,"provider":"offline","message":"Offline practice generator. Creates fill-in-the-blank questions from your upload. Set up a live provider using AI_SETUP.md for AI-generated questions."}
-    keys={"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","openai_compatible":"AI_API_KEY"}
+    keys={"openai":"OPENAI_API_KEY","anthropic":"ANTHROPIC_API_KEY","gemini":"GEMINI_API_KEY","openai_compatible":"AI_API_KEY"}
     configured=selected in keys and bool(os.environ.get(keys.get(selected,""))) and bool(os.environ.get("AI_MODEL"))
+    if selected == "gemini":
+        configured = bool(os.environ.get("GEMINI_API_KEY")) and bool(os.environ.get("GEMINI_MODEL") or os.environ.get("AI_MODEL"))
     if selected=="openai_compatible":configured=configured and bool(os.environ.get("AI_BASE_URL"))
     return {"mode":"live","configured":bool(configured),"provider":selected,"message":"Live AI configured. Upload text is sent to this provider when you generate a quiz." if configured else "Live AI setup is incomplete. Follow AI_SETUP.md, then restart npm run dev."}

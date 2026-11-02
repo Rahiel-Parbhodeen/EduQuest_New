@@ -1,6 +1,8 @@
 // @ts-nocheck - Supertest agents and dynamic API fixtures are runtime values.
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
+import { unlink } from 'node:fs/promises';
+import path from 'node:path';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -432,6 +434,31 @@ describe('Milestones 2–5 API authorization and profanity boundary', () => {
       .attach('file', Buffer.from('%PDF-1.4'), 'notes.pdf');
     expect(response.status).toBe(201);
     resourceRecord = response.body.resource;
+  });
+
+  it('accepts a study guide larger than the previous 20 MiB upload limit', async () => {
+    if (!moduleRecord) {
+      const created = await lecturerAgent
+        .post('/api/v1/modules')
+        .send({ moduleCode: 'LARGEGUIDE', moduleName: 'Large Guide Module' });
+      expect(created.status).toBe(201);
+      moduleRecord = created.body.module;
+    }
+    const bytes = Buffer.alloc(20 * 1024 * 1024 + 1, 0x20);
+    bytes.write('%PDF-');
+    let storedFile;
+    try {
+      const response = await lecturerAgent
+        .post(`/api/v1/modules/${moduleRecord.module_id}/resources`)
+        .field('title', 'Large Study Guide')
+        .attach('file', bytes, 'large-study-guide.pdf');
+      expect(response.status).toBe(201);
+      expect(Number(response.body.resource.file_size_bytes)).toBe(bytes.length);
+      resourceRecord = response.body.resource;
+      storedFile = response.body.resource.file_location;
+    } finally {
+      if (storedFile) await unlink(path.resolve(storedFile)).catch(() => {});
+    }
   });
 
   it('rejects a spoofed file whose extension does not match its magic bytes', async () => {

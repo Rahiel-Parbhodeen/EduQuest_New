@@ -53,10 +53,11 @@ if (
   throw new Error('COOKIE_SECURE=false is not allowed in production');
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './uploads');
 await mkdir(uploadDir, { recursive: true });
+const uploadMaxBytes = Number(process.env.UPLOAD_MAX_BYTES || 50 * 1024 * 1024);
 const upload = multer({
   dest: uploadDir,
   limits: {
-    fileSize: Number(process.env.UPLOAD_MAX_BYTES || 20 * 1024 * 1024),
+    fileSize: uploadMaxBytes,
   },
 });
 const allowedExtensions = new Set(['.pdf', '.docx', '.pptx', '.txt', '.md']);
@@ -1549,6 +1550,14 @@ app.use((err, req, res, _next) => {
       code: err.code || 'INTERNAL_ERROR',
     }),
   );
+  if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE')
+    return error(
+      res,
+      413,
+      'FILE_TOO_LARGE',
+      `Files must be ${Math.floor(uploadMaxBytes / (1024 * 1024))} MiB or smaller.`,
+      requestId(req),
+    );
   if (!res.headersSent)
     error(
       res,

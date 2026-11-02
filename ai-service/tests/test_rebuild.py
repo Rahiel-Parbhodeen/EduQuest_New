@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 sys.path.insert(0,str(Path(__file__).parents[1]))
 from extract_text import extract
-from app import MockProvider,QuizRequest,quiz_prompt
+from app import MockProvider,QuizRequest,canonical_source_excerpt,best_source_excerpt,quiz_prompt
 TEXT='Normalization removes transitive dependencies from relational tables. Indexing accelerates selective searches through large datasets. Transactions preserve consistency during concurrent updates.'
 def test_source_grounded_offline_questions():
     result=MockProvider().generate_quiz(QuizRequest(extracted_text=TEXT,question_count=2,difficulty='hard'))
@@ -19,6 +19,38 @@ def test_prompt_supplies_schema_count_difficulty_and_boundary():
     text=quiz_prompt(QuizRequest(extracted_text=TEXT,question_count=7,difficulty='hard'))
     assert 'exactly 7' in text and 'hard difficulty' in text and 'difficulty_level' in text and '<material>' in text
 
+def test_provider_citation_normalisation_maps_to_exact_original_span():
+    candidate='NORMALIZATION removes transitive dependencies, from relational tables'
+    assert canonical_source_excerpt(candidate,TEXT)==TEXT.split('.')[0]
+
+def test_provider_citation_maps_unicode_compatibility_characters():
+    source='The ﬁrst database key uniquely identifies each row in the table.'
+    candidate='The first database key uniquely identifies each row in the table'
+    assert canonical_source_excerpt(candidate,source)==source[:-1]
+
+def test_provider_citation_maps_pdf_hyphenated_line_breaks():
+    source='The inter-\nnational system performs reliable security checks.'
+    candidate='The international system performs reliable security checks'
+    assert canonical_source_excerpt(candidate,source)==source[:-1]
+
+def test_fallback_citation_uses_answer_and_explanation_terms():
+    source='ATP, or adenosine triphosphate, stores chemical energy for cellular processes.'
+    query='How is energy stored? Cellular respiration produces ATP. ATP stores energy through adenosine triphosphate.'
+    assert best_source_excerpt(query,source)==source
+
+def test_generation_canonicalizes_provider_citation_before_return(monkeypatch):
+    import app
+    monkeypatch.setenv('AI_PROVIDER','mock')
+    result=MockProvider().generate_quiz(QuizRequest(extracted_text=TEXT,question_count=1))
+    exact=result.questions[0].source_excerpt
+    result.questions[0].source_excerpt=exact.upper().replace('.','')
+    canonical=canonical_source_excerpt(result.questions[0].source_excerpt,TEXT)
+    class FakeProvider:
+        def generate_quiz(self,request):return result
+    monkeypatch.setattr(app,'provider',lambda:FakeProvider())
+    generated=app.generate_quiz(QuizRequest(extracted_text=TEXT,question_count=1))
+    assert generated.questions[0].source_excerpt==canonical
+
 @pytest.mark.parametrize('kind,entry,xml',[('docx','word/document.xml','<w:document xmlns:w="urn:w"><w:p><w:r><w:t>'+TEXT+'</w:t></w:r></w:p></w:document>'),('pptx','ppt/slides/slide1.xml','<a:slide xmlns:a="urn:a"><a:p><a:r><a:t>'+TEXT+'</a:t></a:r></a:p></a:slide>')])
 def test_office_text_extraction(tmp_path,kind,entry,xml):
     file=tmp_path/('source.'+kind)
@@ -29,8 +61,15 @@ def test_text_extraction_rejects_empty_and_oversized(tmp_path):
     file=tmp_path/'notes.txt';file.write_text(TEXT,encoding='utf-8');assert extract(file,'txt')==TEXT
     file.write_text('');
     with pytest.raises(ValueError,match='readable'):extract(file,'txt')
-    file.write_text('a'*120001)
-    with pytest.raises(ValueError,match='120,000'):extract(file,'txt')
+    file.write_text('a'*500001)
+    with pytest.raises(ValueError,match='500,000'):extract(file,'txt')
+
+def test_large_study_guide_text_above_previous_limit_is_read(tmp_path):
+    file=tmp_path/'study-guide.txt'
+    material=('Computer networks transmit data between devices. ' * 3000).strip()
+    assert 120000 < len(material) < 500000
+    file.write_text(material,encoding='utf-8')
+    assert extract(file,'txt') == material
 
 def test_blank_pdf_rejects_scanned_or_empty_content(tmp_path):
     from pypdf import PdfWriter
@@ -64,7 +103,7 @@ def test_generation_reports_source_fingerprint_and_mode(monkeypatch):
     assert result.source_characters==len(TEXT)
 
 
-def test_generation_rejects_unrelated_source_quotes(monkeypatch):
+def test_generation_replaces_unmatched_provider_quote_with_source_span(monkeypatch):
     import app
     from fastapi import HTTPException
     result=MockProvider().generate_quiz(QuizRequest(extracted_text=TEXT,question_count=1))
@@ -72,8 +111,8 @@ def test_generation_rejects_unrelated_source_quotes(monkeypatch):
     class FakeProvider:
         def generate_quiz(self,request):return result
     monkeypatch.setattr(app,'provider',lambda:FakeProvider())
-    with pytest.raises(HTTPException) as exc:app.generate_quiz(QuizRequest(extracted_text=TEXT,question_count=1))
-    assert exc.value.detail=='GENERATION_SOURCE_MISMATCH'
+    result=app.generate_quiz(QuizRequest(extracted_text=TEXT,question_count=1))
+    assert result.questions[0].source_excerpt in TEXT
 
 
 def test_status_distinguishes_offline_and_unconfigured_live(monkeypatch):

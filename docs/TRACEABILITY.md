@@ -13,6 +13,12 @@ Status reflects the current local implementation. PGlite evidence is explicitly 
 
 The backend never echoes the matched term or logs offending text. The filter has documented limits and requires periodic custom-list review.
 
+## Study-guide size limits
+
+| Requirement | Implementation | Evidence |
+| --- | --- | --- |
+| Accept larger study guides without unbounded extraction or inference | 50 MiB upload, 500,000 extracted characters, bounded PDF/Office parsing, 8 MiB AI request body | 21 MiB authenticated upload API test; large text extraction tests; AI request-size middleware tests |
+
 | ID             | Implementation                                                    | Evidence/status                                                                                                                               |
 | -------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | FR-01          | `backend/src/app.js` registration                                 | API path implemented; route tests pending                                                                                                     |
@@ -24,7 +30,7 @@ The backend never echoes the matched term or logs offending text. The filter has
 | FR-07          | Resource authorization                                            | automated: ownership and role API tests                                                                                                       |
 | FR-08          | Study group create/join endpoints                                 | API path implemented; route tests pending                                                                                                     |
 | FR-09          | Group resource visibility                                         | automated: group visibility API test                                                                                                          |
-| FR-10          | AI service contracts                                              | `ai-service/app.py` implemented                                                                                                               |
+| FR-10          | AI service contracts                                              | Gemini provider and fake-client coverage; 46 AI-service tests pass; model access and live generation/source-quote smoke pass; Gate 2 awaits approval |
 | FR-11          | Quiz persistence and AI job integration                           | automated: `backend/tests/ai-worker.test.js`, `frontend/src/main.test.jsx`; games partial, pending team decision                              |
 | FR-12          | Attempt start question delivery                                   | automated: `backend/tests/api.test.js`                                                                                                        |
 | FR-13          | Answer persistence                                                | automated: `backend/tests/api.test.js`                                                                                                        |
@@ -183,8 +189,8 @@ FR-24 gate evidence: Timer Trivia contributes 10 engine/property tests, 11 API i
 | No join-code UI                       | Curriculum; module enrolment synchronisation       | experience.test.jsx, experience.test.js                                |
 | Show actual uploaded text             | document-text.js; text-preview endpoint            | preview ownership/error API tests; provenance.spec.js                  |
 | Explain offline/live mode             | /status; generation-status proxy; GenerationNotice | test_rebuild.py; browser test                                          |
-| Questions linked to provided material | source_excerpt; source SHA-256; migration 015      | wrong-source worker test; Python quote test; fresh-upload browser test |
-| Beginner live AI setup                | AI_SETUP.md                                        | official model documentation checked; no paid calls made               |
+| Questions linked to provided material | source_excerpt; source SHA-256; migration 015; canonical source-span mapping | wrong-source rejection; punctuation/Unicode canonicalization tests; fresh-upload browser test |
+| Beginner live AI setup                | AI_SETUP.md                                        | Gemini configuration and synthetic live smoke recorded in DECISIONS.md |
 
 ## Password and IT curriculum requirements
 
@@ -194,6 +200,7 @@ FR-24 gate evidence: Timer Trivia contributes 10 engine/property tests, 11 API i
 | First/second/third-year lists              | migration 016 and curriculum synchronisation  | registration API tests for all three years                                    |
 | Preview next year                          | Curriculum year tabs                          | first-year rebuild browser test; second-year password-curriculum browser test |
 | Matching resource modules                  | shared module endpoint and year-aware labels  | per-year resource API isolation tests; browser resource selector assertions   |
+| Link generated guide questions to source | AI service citation alignment; worker source-link error mapping | AI service citation tests; live 20,460-character guide request returned five questions with source excerpts |
 
 ## Admin and lecturer requests
 

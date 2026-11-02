@@ -40,7 +40,7 @@ export const generationErrorMessages = {
   DOCUMENT_NO_TEXT:
     'No readable text was found. If this is a scanned PDF, apply OCR or upload a text-based document.',
   DOCUMENT_TOO_LARGE:
-    'Split this document into smaller sections and upload again.',
+    'This document exceeds the 500,000-character processing limit. Select relevant chapters and upload them as separate files.',
   DOCUMENT_READ_FAILED:
     'This file could not be read. Check the file or upload a TXT export.',
   SOURCE_TOO_SHORT:

@@ -72,7 +72,7 @@
 
 - The AI service binds to `127.0.0.1` by default through `ai-service/run.py`. Binding to `0.0.0.0` requires the explicit `AI_ALLOW_PUBLIC_BIND=true` opt-in. The backend worker is the only application caller; the frontend uses backend `/api` routes and never calls the AI service directly.
 - Backend-to-AI requests carry `AI_SERVICE_TOKEN`. The service compares it with a constant-time comparison, rejects missing or incorrect tokens with 401, and never includes the token in logs or error responses. `npm run db:setup-check` generates a random token in `.env` when it is missing.
-- The service enforces `AI_MAX_BODY_BYTES` (default 2 MiB) and `AI_REQUEST_TIMEOUT_SECONDS` (default 45). FastAPI docs and OpenAPI are disabled outside development. These controls mitigate the remaining Starlette advisories while the FastAPI dependency line does not support their patched major versions.
+- The service enforces configurable AI request-body and timeout limits (current defaults: 8 MiB and 300 seconds; Gemini client timeout: 120 seconds). FastAPI docs and OpenAPI are disabled outside development. These controls mitigate the remaining Starlette advisories while the FastAPI dependency line does not support their patched major versions.
 - Revisit this decision when FastAPI supports a patched Starlette release: run `pip-audit -r ai-service/requirements.txt`, review the Starlette fixed versions and changelog, then rerun all AI and full application gates before any upgrade.
 
 ## 2026-10-30 — Timer Trivia solo defaults
@@ -108,6 +108,22 @@
 - Admin is a distinct server-side enum role. Public registration still creates only student accounts. Initial admin creation uses a local bootstrap command; demo seeding adds a clearly documented demo admin.
 - CVs are opaque PDF/DOCX attachments in private storage, limited to 5 MB, with authenticated owner/admin download routes. One pending application per applicant is enforced by a partial unique index.
 - Application decisions and role changes are transactional and serialised through a common advisory lock. Admin authority is rechecked inside mutation transactions. Approval changes the existing user role, revokes sessions and preserves student history.
+
+## 2026-11-02 Gemini AI connection — Milestone 1
+
+- Gemini is an additional Python AI provider selected with `AI_PROVIDER=gemini`; it uses the official `google-genai` SDK, `GEMINI_API_KEY`, and configurable `GEMINI_MODEL`. The local example defaults to the documented cost-efficient Flash-Lite model, while deployers can select another model available to their account. Pydantic is pinned to 2.12.5 to satisfy the SDK's minimum supported version.
+- Gemini receives extracted learning text only through the existing authenticated lecturer workflow. Structured output is validated against EduQuest's `QuizResponse`, then the existing exact question-count, source-excerpt, profanity, draft persistence, and lecturer review checks remain authoritative. Student answer correctness remains server-side.
+- The API key stays in the ignored project `.env`; status responses expose provider/configuration state only. This milestone adds no database schema or alternate question/game storage.
+- Gate 1 requires the focused Python suite and one successful low-cost live Gemini generation request using synthetic material. Gate 1 passed: all 46 AI-service tests passed, model metadata access succeeded, and one Flash-Lite question passed EduQuest schema and source-quote validation after temporary HTTP 503 high-demand responses. Later guide milestones remain gated on approval.
+- Provider citations are matched as contiguous normalized word tokens, then replaced with the exact original source span before returning or persisting. This tolerates punctuation, case, and Unicode normalization while still rejecting paraphrased or unrelated excerpts.
+- When a provider citation cannot be aligned exactly, select a verbatim source sentence using terms from the generated question, topic, explanation, and correct answer. The backend worker classifies a missing supporting span as a source-link failure, not as an AI provider outage.
+- The worker accepts an exact citation substring first, then uses normalized token matching for extraction variants. It also verifies the document fingerprint before persistence.
+
+## 2026-11-02 larger study-guide uploads
+
+- Raise the default resource upload limit from 20 MiB to 50 MiB and the extracted-text cap from 120,000 to 500,000 characters. Keep independent bounds of 1,000 PDF pages, 200 MiB expanded Office archives, and 10,000 archive entries; these limits are configurable for deployments.
+- Increase the local subprocess output buffer, AI request body cap, and generation timeouts in step with the larger text ceiling. Do not silently truncate study material; return an actionable chapter-selection message when the cap is exceeded.
+- Gemini's documented input context is 1,048,576 tokens; actual token use varies with the guide text, so retain the local character cap and monitor generation failures/cost. The existing source quote check, strict question validation, draft status, and lecturer review remain unchanged.
 - Admin database writes are allowlisted and strictly validated. Authentication fields and academic/audit history are protected. Module ownership transfer updates related quiz ownership atomically.
 - Password resets store only bcrypt hashes, preserve MFA and revoke all target sessions. Self-password changes use the existing Profile flow.
 - Admin mutation audit history is append-only through both the API policy and a database trigger. CVs and passwords are not placed in audit details.

@@ -36,7 +36,19 @@ The configured OpenAI model is supported by the existing Chat Completions adapte
 
 The app sends the extracted learning material to your chosen provider only when a live generation request is made. Keep `.env` out of GitHub; `.env.example` contains placeholders and is safe to share.
 
+Study guide uploads support up to 50 MiB by default, and text extraction is bounded at 500,000 characters. These limits are configurable in `.env`; very large files beyond the text cap should be split into relevant chapters.
+
 ## Other providers
+
+Gemini: install the Python dependencies from `ai-service/requirements.txt`, then set these values in the project `.env`:
+
+```dotenv
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_private_google_ai_studio_key
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
+
+The API key stays in the Python service environment. The service requests JSON matching EduQuest's existing question schema and still checks that every returned source excerpt occurs in the uploaded material. Check Google's current model list for availability to your account. Restart `npm run dev` after changing `.env`.
 
 Anthropic: set `AI_PROVIDER=anthropic`, `AI_MODEL` to a model your account supports, and `ANTHROPIC_API_KEY`.
 

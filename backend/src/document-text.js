@@ -8,7 +8,7 @@ export const documentMessages = {
   DOCUMENT_NO_TEXT:
     'No readable text was found. Scanned PDFs need OCR; upload a text-based PDF, Word, PowerPoint, TXT or Markdown file.',
   DOCUMENT_TOO_LARGE:
-    'This document is too large to read safely. Split it into smaller sections.',
+    'This document exceeds the 500,000-character processing limit. Select relevant chapters and upload them as separate files.',
   DOCUMENT_READ_FAILED:
     'The uploaded file could not be read. Check the file, or export it as TXT and upload it again.',
   GENERATION_SOURCE_MISMATCH:
@@ -29,7 +29,7 @@ export async function readDocument(resource) {
     const { stdout } = await promisify(execFile)(
       pythonRuntime(),
       [script, resource.file_location, resource.resource_type.toLowerCase()],
-      { timeout: 30000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
+      { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
     );
     output = JSON.parse(stdout);
   } catch (error) {
@@ -54,7 +54,23 @@ export async function readDocument(resource) {
     sha256: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
   };
 }
-export const quoteMatches = (quote, text) =>
-  typeof quote === 'string' &&
-  quote.trim().length >= 15 &&
-  text.replace(/\s+/g, ' ').includes(quote.trim().replace(/\s+/g, ' '));
+export const quoteMatches = (quote, text) => {
+  if (typeof quote !== 'string' || quote.trim().length < 15 || typeof text !== 'string') return false;
+  const excerpt = quote.trim();
+  if (text.includes(excerpt)) return true;
+  const tokens = (value) => {
+    const normalized = value.normalize('NFKC').toLocaleLowerCase();
+    const merged = normalized.replace(/[-\u2010\u2011\u00ad][ \t]*\r?\n[ \t]*/g, '');
+    return merged.match(/[\p{L}\p{N}]+/gu) || [];
+  };
+  const needle = tokens(quote);
+  const haystack = tokens(text);
+  if (needle.length < 3 || needle.length > haystack.length) return false;
+  outer: for (let start = 0; start <= haystack.length - needle.length; start += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[start + offset] !== needle[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
+};

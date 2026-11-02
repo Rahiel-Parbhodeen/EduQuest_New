@@ -467,6 +467,7 @@ function Resources({ user }) {
               required
             />
           </label>
+          <p className="muted">PDF, DOCX, PPTX, TXT or MD · 50 MiB per file by default.</p>
           <button className="primary">Upload</button>
           {error && <p className="field-error">{error}</p>}
         </form>
