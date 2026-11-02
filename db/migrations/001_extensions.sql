@@ -1,0 +1,1 @@
+-- PGlite provides gen_random_uuid() as a built-in function; no contrib extension is required.

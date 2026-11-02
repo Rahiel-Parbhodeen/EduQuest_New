@@ -1,0 +1,13 @@
+ALTER TABLE users ADD COLUMN study_track text CHECK (study_track IN ('IT','Business'));
+ALTER TABLE users ADD COLUMN study_year integer NOT NULL DEFAULT 1 CHECK (study_year BETWEEN 1 AND 4);
+ALTER TABLE users ADD COLUMN mfa_secret text;
+ALTER TABLE users ADD COLUMN mfa_pending_secret text;
+ALTER TABLE users ADD COLUMN mfa_last_counter bigint;
+ALTER TABLE modules ADD COLUMN study_track text CHECK (study_track IN ('IT','Business'));
+ALTER TABLE modules ADD COLUMN study_year integer NOT NULL DEFAULT 1 CHECK (study_year BETWEEN 1 AND 4);
+ALTER TABLE modules ADD COLUMN curriculum boolean NOT NULL DEFAULT false;
+ALTER TABLE study_groups ADD COLUMN language text NOT NULL DEFAULT 'English';
+ALTER TABLE study_groups ADD COLUMN current_activity text NOT NULL DEFAULT 'Planning our first session';
+ALTER TABLE study_groups ADD COLUMN next_activity text NOT NULL DEFAULT 'Agree on our next revision topic';
+ALTER TABLE study_groups ADD COLUMN meeting_details text NOT NULL DEFAULT 'To be arranged';
+CREATE TABLE login_challenges (challenge_hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE, expires_at timestamptz NOT NULL, attempts integer NOT NULL DEFAULT 0);

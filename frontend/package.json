@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "vite": "^8.3.5"
+  },
+  "devDependencies": {}
+}
