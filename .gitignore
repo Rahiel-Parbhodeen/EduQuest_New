@@ -17,3 +17,4 @@ __pycache__/
 playwright-report/
 
 private-uploads/
+DEMO_CREDENTIALS.txt

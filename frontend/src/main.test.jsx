@@ -18,6 +18,7 @@ import {
   QuizGames,
   QuizTaking,
   ResourceRow,
+  StudentQuizList,
 } from './main.jsx';
 
 const bossQuestion = {
@@ -240,6 +241,45 @@ const response = (body, ok = true) => ({
   ok,
   status: ok ? 200 : 401,
   json: async () => body,
+});
+
+describe('student dashboard published quizzes', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows enrolled-module quizzes and opens the selected quiz', async () => {
+    const onOpenQuiz = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        response({
+          data: [
+            {
+              quiz_id: 'published-quiz-1',
+              title: 'Relational Databases',
+              module_name: 'Database Systems',
+              is_competitive: true,
+            },
+          ],
+        }),
+      ),
+    );
+    render(<StudentQuizList onOpenQuiz={onOpenQuiz} />);
+    expect(await screen.findByText('Relational Databases')).toBeTruthy();
+    expect(screen.getByText(/Database Systems · Scored quiz/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open quiz' }));
+    expect(onOpenQuiz).toHaveBeenCalledWith('published-quiz-1');
+  });
+
+  it('explains when no published quizzes are available', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ data: [] })));
+    render(<StudentQuizList />);
+    expect(
+      await screen.findByText('No published quizzes are available yet.'),
+    ).toBeTruthy();
+  });
 });
 
 const pixelQuestion = {

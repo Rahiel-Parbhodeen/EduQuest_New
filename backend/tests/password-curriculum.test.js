@@ -2,6 +2,7 @@
 import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { it, expect } from 'vitest';
+import { registerVerifiedStudent } from './helpers/email-verification.js';
 process.env.NODE_ENV = 'development';
 process.env.COOKIE_SECURE = 'false';
 process.env.AUTH_RATE_LIMIT = '1000';
@@ -30,7 +31,7 @@ const years = [
 ];
 const register = async (year, email) => {
   const agent = request.agent(app);
-  const result = await agent.post('/api/v1/auth/register').send({
+  const result = await registerVerifiedStudent(agent, {
     email,
     password,
     confirmPassword: password,

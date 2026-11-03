@@ -3,6 +3,8 @@ import { registrationSchema, profileSchema } from './student-validation.js';
 import { registerStudentUpdates } from './student-updates.js';
 import { registerExperience } from './experience.js';
 import { challengeHash } from './mfa.js';
+import { sendVerificationCode } from './email-delivery.js';
+import { consumeEmailCode, issueEmailCode } from './email-verification.js';
 import 'dotenv/config';
 import { registerAdmin } from './admin.js';
 import {
@@ -20,6 +22,7 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import multer from 'multer';
 import { z } from 'zod';
+import { zodFieldErrors } from './validation.js';
 import { pool } from '../db.js';
 import {
   noProfanity,
@@ -78,7 +81,7 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 app.use(
-  ['/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/mfa'],
+  ['/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/mfa', '/api/v1/auth/email-verification'],
   rateLimit({
     windowMs: 10 * 60 * 1000,
     limit: Number(process.env.AUTH_RATE_LIMIT || 30),
@@ -91,16 +94,27 @@ app.use(
     },
   }),
 );
+const emailCodeRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.EMAIL_VERIFICATION_LIMIT || 5),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many verification-code requests. Please wait and try again.' } },
+});
 
 const sessionHash = (token) =>
   crypto.createHash('sha256').update(token).digest('hex');
-const error = (res, status, code, message, requestId) =>
-  res.status(status).json({ error: { code, message, requestId } });
+const error = (res, status, code, message, requestId, fields) =>
+  res.status(status).json({
+    error: { code, message, requestId, ...(fields ? { fields } : {}) },
+  });
 const requestId = (req) => req.id || crypto.randomUUID();
 const visibleText = (field, req, res, value) => {
   if (!containsProfanity(value)) return true;
   if (req.user?.userId) recordProfanityViolation(req.user.userId);
-  error(res, 422, 'TEXT_NOT_ALLOWED', profanityMessage, requestId(req));
+  error(res, 422, 'TEXT_NOT_ALLOWED', profanityMessage, requestId(req), {
+    [field]: profanityMessage,
+  });
   return false;
 };
 const parse = (schema, value, req, res) => {
@@ -115,6 +129,7 @@ const parse = (schema, value, req, res) => {
       hasProfanity ? 'TEXT_NOT_ALLOWED' : 'VALIDATION_ERROR',
       hasProfanity ? profanityMessage : 'Please check the submitted fields.',
       requestId(req),
+      zodFieldErrors(result.error.issues),
     );
     return null;
   }
@@ -215,6 +230,48 @@ app.get('/health', async (_req, res) => {
   const result = await pool.query('SELECT 1 AS ok');
   res.json({ ok: result.rows[0].ok === 1 });
 });
+app.post('/api/v1/auth/email-verification/request', emailCodeRateLimit, async (req, res, next) => {
+  const data = parse(
+    z.object({ email: z.string().trim().email().max(254) }).strict(),
+    req.body,
+    req,
+    res,
+  );
+  if (!data) return;
+  const email = data.email.toLowerCase();
+  const existing = await pool.query('SELECT 1 FROM users WHERE email=$1', [email]);
+  if (existing.rowCount) return res.json({ message: 'If this address can be used, a verification code has been sent.' });
+  let issued;
+  const tx = await pool.connect();
+  try {
+    await tx.query('BEGIN');
+    issued = await issueEmailCode(tx, { email, purpose: 'register' });
+    if (issued.error) {
+      await tx.query('ROLLBACK');
+      return error(res, 429, issued.error, 'Please wait before requesting another code.', requestId(req), { email: 'Wait 60 seconds before requesting another code.' });
+    }
+    await tx.query('COMMIT');
+  } catch (e) {
+    await tx.query('ROLLBACK');
+    return next(e);
+  } finally {
+    tx.release();
+  }
+  try {
+    await sendVerificationCode(email, issued.code, 'register');
+    res.json({ message: 'If this address can be used, a verification code has been sent.' });
+  } catch (e) {
+    await pool.query(
+      `UPDATE email_verification_challenges SET consumed_at=now()
+       WHERE email=$1 AND purpose='register' AND user_id IS NULL AND consumed_at IS NULL`,
+      [email],
+    );
+    if (e.message === 'EMAIL_DELIVERY_NOT_CONFIGURED')
+      return error(res, 503, 'EMAIL_DELIVERY_NOT_CONFIGURED', 'Email delivery is not configured. Contact the site administrator.', requestId(req));
+    next(e);
+  }
+});
+
 app.post('/api/v1/auth/register', async (req, res, next) => {
   try {
     if (
@@ -228,8 +285,9 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
         res,
         400,
         'VALIDATION_ERROR',
-        registration.error.issues[0].message,
+        'Please check the submitted fields.',
         requestId(req),
+        zodFieldErrors(registration.error.issues),
       );
     const data = registration.data;
     if (!data) return;
@@ -239,6 +297,18 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
     let result;
     try {
       await tx.query('BEGIN');
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`register:${data.email.toLowerCase()}`]);
+      const codeValid = await consumeEmailCode(tx, {
+        email: data.email.toLowerCase(),
+        purpose: 'register',
+        code: data.emailVerificationCode,
+      });
+      if (!codeValid) {
+        await tx.query('COMMIT');
+        return error(res, 400, 'EMAIL_CODE_INVALID', 'The email code is incorrect or expired.', requestId(req), {
+          emailVerificationCode: 'Enter the current six-digit code sent to your email.',
+        });
+      }
       result = await tx.query(
         "INSERT INTO users(email,password_hash,role,full_name,study_track,study_year) VALUES($1,$2,'student',$3,$4,$5) RETURNING user_id,role,full_name,email,study_track,study_year",
         [
@@ -270,6 +340,7 @@ app.post('/api/v1/auth/register', async (req, res, next) => {
         'EMAIL_EXISTS',
         'An account with that email already exists.',
         requestId(req),
+        { email: 'An account with that email already exists.' },
       );
     next(e);
   }
@@ -296,6 +367,7 @@ app.post('/api/v1/auth/login', async (req, res, next) => {
         'INVALID_LOGIN',
         'Email or password is incorrect.',
         requestId(req),
+        { password: 'Email or password is incorrect.' },
       );
     if (result.rows[0].mfa_secret) {
       const challenge = crypto.randomBytes(32).toString('base64url');
@@ -390,6 +462,28 @@ app.get('/api/v1/modules', requireAuth, async (req, res, next) => {
     next(e);
   }
 });
+app.get(
+  '/api/v1/student/quizzes',
+  requireAuth,
+  requireRole('student'),
+  async (req, res, next) => {
+    try {
+      await syncCurrentCurriculum(pool, req.user.userId);
+      const result = await pool.query(
+        `SELECT q.quiz_id,q.title,q.is_competitive,q.closes_at,m.module_id,m.module_name,m.module_code
+         FROM quizzes q
+         JOIN modules m ON m.module_id=q.module_id
+         JOIN enrollments e ON e.module_id=m.module_id
+         WHERE e.student_id=$1 AND q.status='published'
+         ORDER BY m.module_name,q.title`,
+        [req.user.userId],
+      );
+      res.json({ data: result.rows });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
 app.post(
   '/api/v1/modules',
   requireAuth,
@@ -595,7 +689,7 @@ app.post(
           requestId(req),
         );
       }
-      if (!visibleText('resourceTitle', req, res, title)) {
+      if (!visibleText('title', req, res, title)) {
         await unlink(req.file.path).catch(() => {});
         return;
       }
@@ -695,7 +789,7 @@ app.post(
         })
         .strict();
       const data = parse(schema, req.body, req, res);
-      if (!data || !visibleText('quizTitle', req, res, data.title)) return;
+      if (!data || !visibleText('title', req, res, data.title)) return;
       const ownedModule = await pool.query(
         'SELECT 1 FROM modules WHERE module_id=$1 AND lecturer_id=$2',
         [data.moduleId, req.user.userId],
@@ -708,19 +802,19 @@ app.post(
           'You do not manage this module.',
           requestId(req),
         );
-      for (const question of data.questions) {
-        if (!visibleText('questionText', req, res, question.questionText))
+      for (const [questionIndex, question] of data.questions.entries()) {
+        if (!visibleText(`questions.${questionIndex}.questionText`, req, res, question.questionText))
           return;
         if (
           question.topic &&
-          !visibleText('topicName', req, res, question.topic)
+          !visibleText(`questions.${questionIndex}.topic`, req, res, question.topic)
         )
           return;
-        for (const option of question.options)
-          if (!visibleText('optionText', req, res, option.optionText)) return;
+        for (const [optionIndex, option] of question.options.entries())
+          if (!visibleText(`questions.${questionIndex}.options.${optionIndex}.optionText`, req, res, option.optionText)) return;
         if (
           question.explanation &&
-          !visibleText('explanation', req, res, question.explanation)
+          !visibleText(`questions.${questionIndex}.explanation`, req, res, question.explanation)
         )
           return;
       }
@@ -918,9 +1012,9 @@ app.put(
         .strict();
       const data = parse(schema, req.body, req, res);
       if (!data) return;
-      if (!visibleText('quizTitle', req, res, data.title)) return;
-      for (const question of data.questions || [])
-        if (!visibleText('explanation', req, res, question.explanation)) return;
+      if (!visibleText('title', req, res, data.title)) return;
+      for (const [questionIndex, question] of (data.questions || []).entries())
+        if (!visibleText(`questions.${questionIndex}.explanation`, req, res, question.explanation)) return;
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -1558,6 +1652,15 @@ app.use((err, req, res, _next) => {
       `Files must be ${Math.floor(uploadMaxBytes / (1024 * 1024))} MiB or smaller.`,
       requestId(req),
     );
+  if (err instanceof z.ZodError)
+    return res.status(400).json({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Please check the submitted fields.',
+        requestId: requestId(req),
+        fields: zodFieldErrors(err.issues),
+      },
+    });
   if (!res.headersSent)
     error(
       res,

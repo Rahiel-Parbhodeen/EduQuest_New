@@ -5,6 +5,7 @@ import { unlink } from 'node:fs/promises';
 import path from 'node:path';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { registerVerifiedStudent } from './helpers/email-verification.js';
 
 process.env.NODE_ENV = 'development';
 process.env.COOKIE_SECURE = 'false';
@@ -38,7 +39,7 @@ describe('Milestones 2–5 API authorization and profanity boundary', () => {
       email: 'api-lecturer@example.com',
       password: 'StrongLecturerPassword1!',
     });
-    await studentAgent.post('/api/v1/auth/register').send({
+    await registerVerifiedStudent(studentAgent, {
       confirmPassword: 'StrongStudentPassword1!',
       studyTrack: 'IT',
       studyYear: 1,
@@ -46,7 +47,7 @@ describe('Milestones 2–5 API authorization and profanity boundary', () => {
       password: 'StrongStudentPassword1!',
       fullName: 'API Student',
     });
-    await studentTwoAgent.post('/api/v1/auth/register').send({
+    await registerVerifiedStudent(studentTwoAgent, {
       confirmPassword: 'StrongStudentPassword1!',
       studyTrack: 'IT',
       studyYear: 1,
@@ -54,7 +55,7 @@ describe('Milestones 2–5 API authorization and profanity boundary', () => {
       password: 'StrongStudentPassword1!',
       fullName: 'API Student Two',
     });
-    await studentThreeAgent.post('/api/v1/auth/register').send({
+    await registerVerifiedStudent(studentThreeAgent, {
       confirmPassword: 'StrongStudentPassword1!',
       studyTrack: 'IT',
       studyYear: 1,
@@ -236,6 +237,24 @@ describe('Milestones 2–5 API authorization and profanity boundary', () => {
     });
     expect(response.status).toBe(201);
     quizRecord = response.body.quiz;
+  });
+
+  it('lists published enrolled-module quizzes on the student dashboard route', async () => {
+    const response = await studentAgent.get('/api/v1/student/quizzes');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toContainEqual(
+      expect.objectContaining({
+        quiz_id: quizRecord.quiz_id,
+        title: 'API Competitive Quiz',
+        module_id: moduleRecord.module_id,
+      }),
+    );
+    expect(
+      (await lecturerAgent.get('/api/v1/student/quizzes')).status,
+    ).toBe(403);
+    expect((await request(app).get('/api/v1/student/quizzes')).status).toBe(
+      401,
+    );
   });
 
   it('starts an attempt transactionally without exposing correctness', async () => {

@@ -7,7 +7,10 @@ import rateLimit from 'express-rate-limit';
 import { strongPassword } from './student-validation.js';
 import { readDocument, documentMessages } from './document-text.js';
 import { z } from 'zod';
+import { zodFieldErrors } from './validation.js';
 import { newSecret, verifyTotp, challengeHash } from './mfa.js';
+import { sendVerificationCode } from './email-delivery.js';
+import { consumeEmailCode, issueEmailCode } from './email-verification.js';
 export function registerExperience({
   app,
   pool,
@@ -83,7 +86,13 @@ export function registerExperience({
       if (e instanceof z.ZodError)
         return res
           .status(400)
-          .json({ error: { message: e.issues[0].message } });
+          .json({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'Please check the submitted fields.',
+              fields: zodFieldErrors(e.issues),
+            },
+          });
       next(e);
     }
   };
@@ -141,6 +150,7 @@ export function registerExperience({
             error: {
               code: 'CURRENT_PASSWORD_INCORRECT',
               message: 'Your current password is incorrect.',
+              fields: { currentPassword: 'Your current password is incorrect.' },
             },
           });
         }
@@ -151,6 +161,7 @@ export function registerExperience({
               code: 'PASSWORD_UNCHANGED',
               message:
                 'Choose a new password that is different from your current password.',
+              fields: { newPassword: 'Choose a different password.' },
             },
           });
         }
@@ -212,6 +223,115 @@ export function registerExperience({
       }
     }),
   );
+  const emailChangeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.EMAIL_VERIFICATION_LIMIT || 5),
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.post(
+    '/api/v1/profile/email/verification/request',
+    requireAuth,
+    emailChangeLimiter,
+    async (req, res, next) => {
+      if (req.user.role === 'admin')
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Administrators cannot change their email address.' } });
+      const data = z.object({
+        currentPassword: z.string().min(1).max(200),
+        newEmail: z.string().trim().email().max(254),
+      }).strict().safeParse(req.body);
+      if (!data.success)
+        return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Please check the submitted fields.', fields: zodFieldErrors(data.error.issues) } });
+      const email = data.data.newEmail.toLowerCase();
+      const tx = await pool.connect();
+      let issued;
+      try {
+        await tx.query('BEGIN');
+        const current = (await tx.query('SELECT email,password_hash FROM users WHERE user_id=$1 FOR UPDATE', [req.user.userId])).rows[0];
+        if (!current || !(await bcrypt.compare(data.data.currentPassword, current.password_hash))) {
+          await tx.query('ROLLBACK');
+          return res.status(400).json({ error: { code: 'CURRENT_PASSWORD_INCORRECT', message: 'Your current password is incorrect.', fields: { currentPassword: 'Your current password is incorrect.' } } });
+        }
+        if (email === current.email) {
+          await tx.query('ROLLBACK');
+          return res.status(400).json({ error: { code: 'EMAIL_UNCHANGED', message: 'Enter a different email address.', fields: { newEmail: 'Enter a different email address.' } } });
+        }
+        const existing = await tx.query('SELECT 1 FROM users WHERE email=$1 AND user_id<>$2', [email, req.user.userId]);
+        if (existing.rowCount) {
+          await tx.query('ROLLBACK');
+          return res.status(409).json({ error: { code: 'EMAIL_EXISTS', message: 'That email address is already in use.', fields: { newEmail: 'That email address is already in use.' } } });
+        }
+        issued = await issueEmailCode(tx, { email, purpose: 'change_email', userId: req.user.userId });
+        if (issued.error) {
+          await tx.query('ROLLBACK');
+          return res.status(429).json({ error: { code: issued.error, message: 'Please wait before requesting another code.', fields: { newEmail: 'Wait 60 seconds before requesting another code.' } } });
+        }
+        await tx.query('COMMIT');
+      } catch (error) {
+        await tx.query('ROLLBACK');
+        return next(error);
+      } finally {
+        tx.release();
+      }
+      try {
+        await sendVerificationCode(email, issued.code, 'change_email');
+        res.json({ message: 'If this address can be used, a verification code has been sent.' });
+      } catch (error) {
+        await pool.query(`UPDATE email_verification_challenges SET consumed_at=now() WHERE email=$1 AND purpose='change_email' AND user_id=$2 AND consumed_at IS NULL`, [email, req.user.userId]);
+        if (error.message === 'EMAIL_DELIVERY_NOT_CONFIGURED')
+          return res.status(503).json({ error: { code: error.message, message: 'Email delivery is not configured. Contact the site administrator.' } });
+        next(error);
+      }
+    },
+  );
+  app.post(
+    '/api/v1/profile/email/verification/confirm',
+    requireAuth,
+    async (req, res, next) => {
+      if (req.user.role === 'admin')
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Administrators cannot change their email address.' } });
+      const data = z.object({
+        newEmail: z.string().trim().email().max(254),
+        emailVerificationCode: z.string().regex(/^\d{6}$/, 'Enter the six-digit email code.'),
+      }).strict().safeParse(req.body);
+      if (!data.success)
+        return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Please check the submitted fields.', fields: zodFieldErrors(data.error.issues) } });
+      const email = data.data.newEmail.toLowerCase();
+      const tx = await pool.connect();
+      try {
+        await tx.query('BEGIN');
+        const current = (await tx.query('SELECT email FROM users WHERE user_id=$1 FOR UPDATE', [req.user.userId])).rows[0];
+        if (!current) {
+          await tx.query('ROLLBACK');
+          return res.status(404).json({ error: { message: 'Account not found.' } });
+        }
+        if (email === current.email) {
+          await tx.query('ROLLBACK');
+          return res.status(400).json({ error: { code: 'EMAIL_UNCHANGED', message: 'Enter a different email address.', fields: { newEmail: 'Enter a different email address.' } } });
+        }
+        const existing = await tx.query('SELECT 1 FROM users WHERE email=$1 AND user_id<>$2', [email, req.user.userId]);
+        if (existing.rowCount) {
+          await tx.query('ROLLBACK');
+          return res.status(409).json({ error: { code: 'EMAIL_EXISTS', message: 'That email address is already in use.', fields: { newEmail: 'That email address is already in use.' } } });
+        }
+        const valid = await consumeEmailCode(tx, { email, purpose: 'change_email', userId: req.user.userId, code: data.data.emailVerificationCode });
+        if (!valid) {
+          await tx.query('COMMIT');
+          return res.status(400).json({ error: { code: 'EMAIL_CODE_INVALID', message: 'The email code is incorrect or expired.', fields: { emailVerificationCode: 'Enter the current six-digit code sent to your email.' } } });
+        }
+        const updated = await tx.query('UPDATE users SET email=$1,email_verified_at=now() WHERE user_id=$2 RETURNING user_id,role,full_name,email,study_track,study_year', [email, req.user.userId]);
+        await tx.query('UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND token_hash<>$2 AND revoked_at IS NULL', [req.user.userId, crypto.createHash('sha256').update(req.cookies.eduquest_session).digest('hex')]);
+        await tx.query('DELETE FROM login_challenges WHERE user_id=$1', [req.user.userId]);
+        await tx.query('COMMIT');
+        res.json({ user: updated.rows[0] });
+      } catch (error) {
+        await tx.query('ROLLBACK');
+        next(error);
+      } finally {
+        tx.release();
+      }
+    },
+  );
   app.post(
     '/api/v1/auth/mfa/verify',
     handle(async (req, res) => {
@@ -246,6 +366,7 @@ export function registerExperience({
           return res.status(401).json({
             error: {
               message: 'Incorrect or already used authenticator code.',
+              fields: { code: 'Incorrect or already used authenticator code.' },
             },
           });
         }
@@ -307,7 +428,7 @@ export function registerExperience({
       if (step === null)
         return res
           .status(400)
-          .json({ error: { message: 'Incorrect authenticator code.' } });
+          .json({ error: { message: 'Incorrect authenticator code.', fields: { code: 'Incorrect authenticator code.' } } });
       const updated = await pool.query(
         'UPDATE users SET mfa_secret=$1,mfa_pending_secret=NULL,mfa_last_counter=$2 WHERE user_id=$3 AND mfa_secret IS NULL AND mfa_pending_secret=$1',
         [s, step, req.user.userId],

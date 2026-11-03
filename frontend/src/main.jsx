@@ -7,6 +7,7 @@ import {
 import { Messages } from './messages.jsx';
 import { moduleLabel } from './module-label.js';
 import { GenerationNotice, generationErrorMessages } from './generation.jsx';
+import { apiRequest } from './validation.js';
 import {
   NewAuth,
   Profile,
@@ -19,20 +20,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const api = async (path, options = {}) => {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: 'include',
-    ...options,
-    headers: { 'content-type': 'application/json', ...(options.headers || {}) },
-  });
-  const body = response.status === 204 ? null : await response.json();
-  if (!response.ok) {
-    const error = new Error(body?.error?.message || 'Something went wrong.');
-    error.status = response.status;
-    throw error;
-  }
-  return body;
-};
+const api = (path, options = {}) => apiRequest(path, options);
 
 export function App() {
   const [user, setUser] = useState(null);
@@ -183,7 +171,15 @@ export function App() {
           <AdminUsers user={user} />
         )}
         {user.role === 'admin' && screen === 'Database' && <AdminDatabase />}
-        {screen === 'Dashboard' && <Dashboard user={user} />}
+        {screen === 'Dashboard' && (
+          <Dashboard
+            user={user}
+            onOpenQuiz={(id) => {
+              setQuizId(id);
+              setScreen('Quiz');
+            }}
+          />
+        )}
         {screen === 'Profile' && <Profile user={user} onUpdate={setUser} />}
         {screen === 'Modules' && <Curriculum user={user} />}
         {screen === 'Resources' && <Resources user={user} />}
@@ -310,32 +306,67 @@ function State({ state, empty = 'Nothing here yet.' }) {
   if (!state.data.length) return <p className="empty-state">{empty}</p>;
   return null;
 }
-function Dashboard({ user }) {
+function Dashboard({ user, onOpenQuiz }) {
   const state = useData('/modules');
   return (
-    <section className="grid">
-      <article className="card hero">
-        <span className="eyebrow">
-          {user.role === 'student' ? 'YOUR LEARNING' : 'YOUR TEACHING'}
-        </span>
-        <h2>
-          {user.role === 'student'
-            ? 'Small steps. Big discoveries.'
-            : 'Inspire the next discovery.'}
-        </h2>
-        <p>
-          Use the navigation to manage modules, study groups, quizzes and
-          results.
-        </p>
-      </article>
-      <article className="card stat">
-        <strong>{state.data.length}</strong>
-        <span>Visible modules</span>
-      </article>
-      <article className="card stat amber">
-        <strong>{user.role === 'student' ? 'Practice' : 'Insights'}</strong>
-        <span>Next focus</span>
-      </article>
+    <>
+      <section className="grid">
+        <article className="card hero">
+          <span className="eyebrow">
+            {user.role === 'student' ? 'YOUR LEARNING' : 'YOUR TEACHING'}
+          </span>
+          <h2>
+            {user.role === 'student'
+              ? 'Small steps. Big discoveries.'
+              : 'Inspire the next discovery.'}
+          </h2>
+          <p>
+            Use the navigation to manage modules, study groups, quizzes and
+            results.
+          </p>
+        </article>
+        <article className="card stat">
+          <strong>{state.data.length}</strong>
+          <span>Visible modules</span>
+        </article>
+        <article className="card stat amber">
+          <strong>{user.role === 'student' ? 'Practice' : 'Insights'}</strong>
+          <span>Next focus</span>
+        </article>
+      </section>
+      {user.role === 'student' && (
+        <StudentQuizList onOpenQuiz={onOpenQuiz} />
+      )}
+    </>
+  );
+}
+
+export function StudentQuizList({ onOpenQuiz = () => {} }) {
+  const quizzes = useData('/student/quizzes');
+  return (
+    <section className="card" aria-labelledby="student-quizzes-heading">
+      <h2 id="student-quizzes-heading">Published quizzes</h2>
+      <p className="muted">Quizzes published for your enrolled modules.</p>
+      <State state={quizzes} empty="No published quizzes are available yet." />
+      {quizzes.data.map((quiz) => (
+        <div className="quiz-entry" key={quiz.quiz_id}>
+          <div className="list-row">
+            <span>
+              {quiz.title}
+              <small>
+                {quiz.module_name} ·{' '}
+                {quiz.is_competitive ? 'Scored quiz' : 'Practice quiz'}
+              </small>
+            </span>
+            <button
+              className="secondary"
+              onClick={() => onOpenQuiz(quiz.quiz_id)}
+            >
+              Open quiz
+            </button>
+          </div>
+        </div>
+      ))}
     </section>
   );
 }
@@ -359,13 +390,9 @@ function Resources({ user }) {
     form.append('title', title);
     form.append('file', file);
     try {
-      await fetch(`/api/v1/modules/${moduleId}/resources`, {
+      await api(`/modules/${moduleId}/resources`, {
         method: 'POST',
-        credentials: 'include',
         body: form,
-      }).then(async (response) => {
-        if (!response.ok)
-          throw new Error((await response.json()).error.message);
       });
       setTitle('');
       setResourceRevision((v) => v + 1);
@@ -382,6 +409,7 @@ function Resources({ user }) {
           Search modules
           <input
             type="search"
+            name="moduleSearch"
             placeholder="Module name"
             value={resourceSearch}
             onChange={(e) => setResourceSearch(e.target.value)}
@@ -410,6 +438,7 @@ function Resources({ user }) {
         <label htmlFor="resource-module">Choose module</label>
         <select
           id="resource-module"
+          name="moduleId"
           value={moduleId}
           onChange={(event) => setModuleId(event.target.value)}
         >
@@ -438,6 +467,7 @@ function Resources({ user }) {
           <label>
             Module
             <select
+              name="moduleId"
               value={moduleId}
               onChange={(event) => setModuleId(event.target.value)}
               required
@@ -453,6 +483,7 @@ function Resources({ user }) {
           <label>
             Title
             <input
+              name="title"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               required
@@ -584,13 +615,21 @@ export function ResourceRow({ resource, lecturer }) {
           <pre>{preview.text}</pre>
         </details>
       )}
-      <div className="generation-controls">
+      <form
+        className="generation-controls"
+        onSubmit={(event) => {
+          event.preventDefault();
+          generate();
+        }}
+      >
         <label>
           Questions
           <input
+            name="questionCount"
             type="number"
             min="1"
             max="50"
+            required
             value={questionCount}
             onChange={(event) => setQuestionCount(event.target.value)}
           />
@@ -598,6 +637,7 @@ export function ResourceRow({ resource, lecturer }) {
         <label>
           Difficulty
           <select
+            name="difficulty"
             value={difficulty}
             onChange={(event) => setDifficulty(event.target.value)}
           >
@@ -607,10 +647,10 @@ export function ResourceRow({ resource, lecturer }) {
             <option value="hard">Hard</option>
           </select>
         </label>
-        <button className="primary" onClick={generate}>
+        <button className="primary" type="submit">
           Generate quiz
         </button>
-      </div>
+      </form>
       {job && (
         <p className="job-status" aria-live="polite">
           Generation status: <b>{job.status}</b>
@@ -650,6 +690,7 @@ export function ResourceRow({ resource, lecturer }) {
           <label>
             Quiz title
             <input
+              name="title"
               value={quiz.title}
               onChange={(event) =>
                 setQuiz({ ...quiz, title: event.target.value })
@@ -659,6 +700,7 @@ export function ResourceRow({ resource, lecturer }) {
           <label>
             Mode
             <select
+              name="isCompetitive"
               value={quiz.is_competitive ? 'competitive' : 'practice'}
               onChange={(event) =>
                 setQuiz({
@@ -693,6 +735,7 @@ export function ResourceRow({ resource, lecturer }) {
                 <label>
                   Difficulty
                   <select
+                    name={`questions.${question.questionId}.difficultyLevel`}
                     value={question.difficultyLevel}
                     onChange={(event) =>
                       setQuiz({
@@ -718,6 +761,7 @@ export function ResourceRow({ resource, lecturer }) {
                 <label>
                   Explanation
                   <textarea
+                    name={`questions.${question.questionId}.explanation`}
                     maxLength="300"
                     value={question.explanation || ''}
                     onChange={(event) =>
@@ -757,6 +801,7 @@ function Leaderboard({ user }) {
     <section className="card">
       <h2>Leaderboard</h2>
       <select
+        name="moduleId"
         value={moduleId}
         onChange={(event) => setModuleId(event.target.value)}
       >
@@ -799,6 +844,7 @@ function Analytics({ user }) {
     <section className="card">
       <h2>Analytics</h2>
       <select
+        name="moduleId"
         value={moduleId}
         onChange={(event) => setModuleId(event.target.value)}
       >
@@ -845,6 +891,7 @@ function Quizzes({
       <label htmlFor="quiz-module">Choose a module</label>
       <select
         id="quiz-module"
+        name="moduleId"
         value={moduleId}
         onChange={(event) => setModuleId(event.target.value)}
       >

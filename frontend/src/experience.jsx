@@ -1,16 +1,8 @@
 const YEAR_MODULES = {1:['Information systems','Maths','Programming','Web Technology','Networks'],2:['Programming','Database Systems','Information systems','Cloud computing','Networks'],3:['Programming','Mobile app development','Operating systems','Human Computer Interaction','Artificial Intelligence']};
 import { moduleLabel } from './module-label.js';
+import { apiRequest, showFieldErrors } from './validation.js';
 import React, { useState, useEffect } from 'react';
-const api = async (path, options = {}) => {
-  const r = await fetch('/api/v1' + path, {
-    credentials: 'include',
-    ...options,
-    headers: { 'content-type': 'application/json', ...options.headers },
-  });
-  const b = r.status === 204 ? {} : await r.json();
-  if (!r.ok) throw Error(b.error?.message || 'Request failed.');
-  return b;
-};
+const api = (path, options = {}) => apiRequest(path, options, 'Request failed.');
 const send = (path, data, method = 'POST') =>
   api(path, { method, body: JSON.stringify(data) });
 const nameValid = (v) =>
@@ -28,6 +20,7 @@ export function Fields({ form, setForm }) {
       <label>
         First and last name
         <input
+          name="fullName"
           autoComplete="name"
           maxLength={120}
           required
@@ -41,6 +34,7 @@ export function Fields({ form, setForm }) {
       <label>
         Study programme
         <select
+          name="studyTrack"
           value={form.studyTrack}
           onChange={(e) => setForm({ ...form, studyTrack: e.target.value })}
         >
@@ -51,6 +45,7 @@ export function Fields({ form, setForm }) {
       <label>
         Year of study
         <select
+          name="studyYear"
           value={form.studyYear}
           onChange={(e) =>
             setForm({ ...form, studyYear: Number(e.target.value) })
@@ -80,6 +75,9 @@ export function NewAuth({ onLogin, notice = '' }) {
     [error, setError] = useState(''),
     [challenge, setChallenge] = useState(''),
     [code, setCode] = useState(''),
+    [emailVerificationCode, setEmailVerificationCode] = useState(''),
+    [emailCodeSent, setEmailCodeSent] = useState(false),
+    [emailNotice, setEmailNotice] = useState(''),
     [busy, setBusy] = useState(false);
   const submit = async (e) => {
     e.preventDefault();
@@ -91,19 +89,30 @@ export function NewAuth({ onLogin, notice = '' }) {
         return;
       }
       if (mode === 'register') {
-        if (!nameValid(form.fullName))
-          throw Error('Enter your first and last name without numbers.');
-        if (!passwordValid(form.password))
-          throw Error(
-            'Use 12–72 characters with uppercase, lowercase, a number and a special character.',
-          );
-        if (form.password !== form.confirmPassword)
-          throw Error('Passwords must match.');
+        const formElement = e.currentTarget;
+        if (!nameValid(form.fullName)) {
+          showFieldErrors(formElement, { fullName: 'Enter your first and last name without numbers.' });
+          return;
+        }
+        if (!passwordValid(form.password)) {
+          showFieldErrors(formElement, { password: 'Use a strong password with uppercase, lowercase, a number and a special character.' });
+          return;
+        }
+        if (form.password !== form.confirmPassword) {
+          showFieldErrors(formElement, { confirmPassword: 'Passwords must match.' });
+          return;
+        }
+        if (!emailCodeSent) {
+          const result = await send('/auth/email-verification/request', { email: form.email });
+          setEmailCodeSent(true);
+          setEmailNotice(result.message || 'Enter the verification code sent to your email.');
+          return;
+        }
       }
       const b = await send(
         '/auth/' + mode,
         mode === 'register'
-          ? form
+          ? { ...form, emailVerificationCode }
           : { email: form.email, password: form.password },
       );
       if (b.mfaRequired) setChallenge(b.challenge);
@@ -144,6 +153,7 @@ export function NewAuth({ onLogin, notice = '' }) {
           <label>
             Authenticator code
             <input
+              name="code"
               inputMode="numeric"
               autoComplete="one-time-code"
               pattern="[0-9]{6}"
@@ -160,17 +170,24 @@ export function NewAuth({ onLogin, notice = '' }) {
             <label>
               Email
               <input
+                name="email"
                 type="email"
                 autoComplete="email"
                 required
                 maxLength={254}
                 value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                onChange={(e) => {
+                  setForm({ ...form, email: e.target.value });
+                  setEmailCodeSent(false);
+                  setEmailVerificationCode('');
+                  setEmailNotice('');
+                }}
               />
             </label>
             <label>
               Password
               <input
+                name="password"
                 type={showPasswords ? "text" : "password"}
                 autoComplete={
                   mode === 'register' ? 'new-password' : 'current-password'
@@ -191,6 +208,7 @@ export function NewAuth({ onLogin, notice = '' }) {
                 <label>
                   Confirm password
                   <input
+                    name="confirmPassword"
                     type={showPasswords ? "text" : "password"}
                     autoComplete="new-password"
                     required
@@ -202,8 +220,26 @@ export function NewAuth({ onLogin, notice = '' }) {
                 </label>
               </>
             )}
+            {mode === 'register' && emailCodeSent && (
+              <label>
+                Email verification code
+                <input
+                  name="emailVerificationCode"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]{6}"
+                  minLength={6}
+                  maxLength={6}
+                  required
+                  value={emailVerificationCode}
+                  onChange={(event) => setEmailVerificationCode(event.target.value)}
+                />
+                <small>Enter the six-digit code sent to this email address.</small>
+              </label>
+            )}
           </>
         )}
+        {emailNotice && <p role="status">{emailNotice}</p>}
         {error && (
           <p role="alert" className="field-error">
             {error}
@@ -215,7 +251,9 @@ export function NewAuth({ onLogin, notice = '' }) {
             : challenge
               ? 'Verify'
               : mode === 'register'
-                ? 'Register'
+                ? emailCodeSent
+                  ? 'Register'
+                  : 'Send verification code'
                 : 'Log in'}
         </button>
         <button
@@ -225,6 +263,9 @@ export function NewAuth({ onLogin, notice = '' }) {
             setChallenge('');
             setMode(mode === 'register' ? 'login' : 'register');
             setError('');
+            setEmailCodeSent(false);
+            setEmailVerificationCode('');
+            setEmailNotice('');
           }}
         >
           {challenge
@@ -254,14 +295,17 @@ export function PasswordChange() {
     if (busy) return;
     setFeedback({ kind: '', message: '' });
     if (!fields.currentPassword) {
+      showFieldErrors(event.currentTarget, { currentPassword: 'Enter your current password.' });
       setFeedback({ kind: 'error', message: 'Enter your current password.' });
       return;
     }
     if (fields.newPassword !== fields.confirmNewPassword) {
+      showFieldErrors(event.currentTarget, { confirmNewPassword: 'New passwords do not match.' });
       setFeedback({ kind: 'error', message: 'New passwords do not match.' });
       return;
     }
     if (!passwordValid(fields.newPassword)) {
+      showFieldErrors(event.currentTarget, { newPassword: 'Use a strong password with uppercase, lowercase, a number and a special character.' });
       setFeedback({
         kind: 'error',
         message:
@@ -270,6 +314,7 @@ export function PasswordChange() {
       return;
     }
     if (fields.currentPassword === fields.newPassword) {
+      showFieldErrors(event.currentTarget, { newPassword: 'Choose a different password.' });
       setFeedback({
         kind: 'error',
         message:
@@ -301,6 +346,7 @@ export function PasswordChange() {
       <label>
         Current password
         <input
+          name="currentPassword"
           type="password"
           autoComplete="current-password"
           required
@@ -312,6 +358,7 @@ export function PasswordChange() {
       <label>
         New password
         <input
+          name="newPassword"
           type="password"
           autoComplete="new-password"
           required
@@ -327,6 +374,7 @@ export function PasswordChange() {
       <label>
         Confirm new password
         <input
+          name="confirmNewPassword"
           type="password"
           autoComplete="new-password"
           required
@@ -359,6 +407,9 @@ export function Profile({ user, onUpdate }) {
     [setup, setSetup] = useState(null),
     [code, setCode] = useState(''),
     [enabled, setEnabled] = useState(user.mfa_enabled || false);
+  const [emailForm, setEmailForm] = useState({ currentPassword: '', newEmail: '', emailVerificationCode: '' });
+  const [emailCodeSent, setEmailCodeSent] = useState(false);
+  const [emailFeedback, setEmailFeedback] = useState('');
   return (
     <section className="grid">
       <form
@@ -366,8 +417,10 @@ export function Profile({ user, onUpdate }) {
         onSubmit={async (e) => {
           e.preventDefault();
           try {
-            if (!nameValid(form.fullName))
-              throw Error('Enter your first and last name without numbers.');
+            if (!nameValid(form.fullName)) {
+              showFieldErrors(e.currentTarget, { fullName: 'Enter your first and last name without numbers.' });
+              return;
+            }
             onUpdate((await send('/profile', form, 'PUT')).user);
             setMessage(
               'Profile saved. Your current-year curriculum is now available.',
@@ -383,6 +436,86 @@ export function Profile({ user, onUpdate }) {
         <button className="primary">Save profile</button>
         <p role="status">{message}</p>
       </form>
+      {user.role !== 'admin' && <form
+        className="card"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setEmailFeedback('');
+          try {
+            if (!emailCodeSent) {
+              const result = await send('/profile/email/verification/request', {
+                currentPassword: emailForm.currentPassword,
+                newEmail: emailForm.newEmail,
+              });
+              setEmailCodeSent(true);
+              setEmailFeedback(result.message || 'Enter the code sent to the new email address.');
+              return;
+            }
+            const result = await send('/profile/email/verification/confirm', {
+              newEmail: emailForm.newEmail,
+              emailVerificationCode: emailForm.emailVerificationCode,
+            });
+            onUpdate(result.user);
+            setEmailForm({ currentPassword: '', newEmail: result.user.email, emailVerificationCode: '' });
+            setEmailCodeSent(false);
+            setEmailFeedback('Email address changed and verified.');
+          } catch (error) {
+            setEmailFeedback(error.message);
+          }
+        }}
+      >
+        <h2>Change email address</h2>
+        <label>
+          New email address
+          <input
+            name="newEmail"
+            type="email"
+            autoComplete="email"
+            maxLength={254}
+            required
+            value={emailForm.newEmail}
+            onChange={(event) => {
+              setEmailForm({ ...emailForm, newEmail: event.target.value, emailVerificationCode: '' });
+              setEmailCodeSent(false);
+              setEmailFeedback('');
+            }}
+          />
+        </label>
+        {!emailCodeSent ? (
+          <label>
+            Current password
+            <input
+              name="currentPassword"
+              type="password"
+              autoComplete="current-password"
+              maxLength={200}
+              required
+              value={emailForm.currentPassword}
+              onChange={(event) => setEmailForm({ ...emailForm, currentPassword: event.target.value })}
+            />
+          </label>
+        ) : (
+          <label>
+            Email verification code
+            <input
+              name="emailVerificationCode"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]{6}"
+              minLength={6}
+              maxLength={6}
+              required
+              value={emailForm.emailVerificationCode}
+              onChange={(event) => setEmailForm({ ...emailForm, emailVerificationCode: event.target.value })}
+            />
+            <small>Enter the six-digit code sent to the new address.</small>
+          </label>
+        )}
+        <button className="primary">
+          {emailCodeSent ? 'Verify and change email' : 'Send verification code'}
+        </button>
+        {emailFeedback && <p role="status">{emailFeedback}</p>}
+      </form>}
       <PasswordChange />
       <div className="card">
         <h2>Multifactor authentication</h2>
@@ -430,6 +563,7 @@ export function Profile({ user, onUpdate }) {
                 <label>
                   Six-digit code
                   <input
+                    name="code"
                     required
                     inputMode="numeric"
                     pattern="[0-9]{6}"
@@ -518,10 +652,11 @@ export function Curriculum({ user }) {
         >
           <h2>Configure curriculum</h2>
           <p>Add official modules for each programme and year.</p>
-          <label>Module name<select required value={form.moduleName} onChange={e => setForm({...form, moduleName:e.target.value})}><option value="">Choose module</option>{(YEAR_MODULES[form.studyYear] || []).map(name => <option key={name}>{name}</option>)}</select></label>
+          <label>Module name<select name="moduleName" required value={form.moduleName} onChange={e => setForm({...form, moduleName:e.target.value})}><option value="">Choose module</option>{(YEAR_MODULES[form.studyYear] || []).map(name => <option key={name}>{name}</option>)}</select></label>
           <label>
             Programme
             <select
+              name="studyTrack"
               value={form.studyTrack}
               onChange={(e) => setForm({ ...form, studyTrack: e.target.value })}
             >
@@ -532,6 +667,7 @@ export function Curriculum({ user }) {
           <label>
             Year
             <select
+              name="studyYear"
               value={form.studyYear}
               onChange={(e) =>
                 setForm({ ...form, studyYear: Number(e.target.value), moduleName: '' })
@@ -582,7 +718,10 @@ export function StudyGroups({ user }) {
   const save = async (e) => {
     e.preventDefault();
     try {
-      if (!form.meetingAt || new Date(form.meetingAt).getTime() <= Date.now()) throw new Error('Choose a future meeting date and time.');
+      if (!form.meetingAt || new Date(form.meetingAt).getTime() <= Date.now()) {
+        showFieldErrors(e.currentTarget, { meetingAt: 'Choose a future meeting date and time.' });
+        throw new Error('Choose a future meeting date and time.');
+      }
       let id = editing;
       if (!id)
         id = (
@@ -714,6 +853,7 @@ export function StudyGroups({ user }) {
             <label>
               Module
               <select
+                name="moduleId"
                 required
                 value={form.moduleId}
                 onChange={(e) => setForm({ ...form, moduleId: e.target.value })}
@@ -729,6 +869,7 @@ export function StudyGroups({ user }) {
             <label>
               Group name
               <input
+                name="groupName"
                 required
                 maxLength={120}
                 value={form.groupName}
@@ -741,11 +882,12 @@ export function StudyGroups({ user }) {
         )}
         <label>
           Language
-          <select value={form.language} onChange={e => setForm({...form,language:e.target.value})}>{['English','Afrikaans','Zulu'].map(l => <option key={l}>{l}</option>)}</select>
+          <select name="language" value={form.language} onChange={e => setForm({...form,language:e.target.value})}>{['English','Afrikaans','Zulu'].map(l => <option key={l}>{l}</option>)}</select>
         </label>
         <label>
           What are you doing now?
           <textarea
+            name="currentActivity"
             required
             maxLength={500}
             value={form.currentActivity}
@@ -754,10 +896,11 @@ export function StudyGroups({ user }) {
             }
           />
         </label>
-        <label>Meeting date and time<input type="datetime-local" required min={new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)} value={form.meetingAt} onChange={e => setForm({...form,meetingAt:e.target.value})}/></label>
+        <label>Meeting date and time<input name="meetingAt" type="datetime-local" required min={new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)} value={form.meetingAt} onChange={e => setForm({...form,meetingAt:e.target.value})}/></label>
         <label>
           When and where do you meet?
           <input
+            name="meetingDetails"
             required
             maxLength={300}
             value={form.meetingDetails}
@@ -816,6 +959,7 @@ export function CodeLab() {
           <label key={label}>
             {label}
             <textarea
+              name={label.toLowerCase()}
               spellCheck={false}
               rows={8}
               maxLength={20000}
@@ -934,6 +1078,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
       <label>
         Module
         <select
+          name="moduleId"
           required
           value={moduleId}
           onChange={(e) => setModuleId(e.target.value)}
@@ -949,6 +1094,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
       <label>
         Quiz title
         <input
+          name="title"
           required
           maxLength={200}
           value={title}
@@ -957,6 +1103,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
       </label>
       <label>
         <input
+          name="isCompetitive"
           type="checkbox"
           checked={competitive}
           onChange={(e) => setCompetitive(e.target.checked)}
@@ -969,6 +1116,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
           <label>
             Question or code snippet
             <textarea
+              name={`questions.${i}.questionText`}
               required
               value={q.questionText}
               onChange={(e) => update(i, { questionText: e.target.value })}
@@ -977,6 +1125,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
           <label>
             Topic
             <input
+              name={`questions.${i}.topic`}
               required
               value={q.topic}
               onChange={(e) => update(i, { topic: e.target.value })}
@@ -986,6 +1135,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
             <label>
               Marks
               <input
+                name={`questions.${i}.marks`}
                 type="number"
                 min={1}
                 max={100}
@@ -997,6 +1147,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
             <label>
               Difficulty
               <select
+                name={`questions.${i}.difficultyLevel`}
                 value={q.difficultyLevel}
                 onChange={(e) =>
                   update(i, { difficultyLevel: Number(e.target.value) })
@@ -1029,6 +1180,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
               <label>
                 Option {n + 1}
                 <input
+                  name={`questions.${i}.options.${n}.optionText`}
                   required
                   value={o.optionText}
                   onChange={(e) =>
@@ -1045,6 +1197,7 @@ export function ManualQuiz({ onCreated = () => {} }) {
           <label>
             Explanation
             <textarea
+              name={`questions.${i}.explanation`}
               maxLength={300}
               value={q.explanation}
               onChange={(e) => update(i, { explanation: e.target.value })}

@@ -109,6 +109,10 @@
 - CVs are opaque PDF/DOCX attachments in private storage, limited to 5 MB, with authenticated owner/admin download routes. One pending application per applicant is enforced by a partial unique index.
 - Application decisions and role changes are transactional and serialised through a common advisory lock. Admin authority is rechecked inside mutation transactions. Approval changes the existing user role, revokes sessions and preserves student history.
 
+## 2026-11-03 student dashboard quizzes â€” Milestone 1
+
+- Students see published quizzes for modules in which they are enrolled directly on the dashboard, with a direct open action. The server filters by student enrollment and published status; drafts remain lecturer-only. The existing module-scoped quiz list remains available.
+
 ## 2026-11-02 Gemini AI connection — Milestone 1
 
 - Gemini is an additional Python AI provider selected with `AI_PROVIDER=gemini`; it uses the official `google-genai` SDK, `GEMINI_API_KEY`, and configurable `GEMINI_MODEL`. The local example defaults to the documented cost-efficient Flash-Lite model, while deployers can select another model available to their account. Pydantic is pinned to 2.12.5 to satisfy the SDK's minimum supported version.
@@ -131,3 +135,9 @@
 
 ## Student and lecturer updates (2026-11-02)
 Year-three module/resource views use the existing catalogue, without deleting other years. Lecturer module names are validated by year; internal codes are generated for compatibility. Private document access checks enrolment and group membership. Student direct messaging checks roles, recipients, profanity and rate limits. Meetings require English/Afrikaans/Zulu and a future timestamp. Existing records are preserved.
+
+## 2026-11-03 validation and email verification
+
+- Keep validation authoritative on the server and return Zod issue paths so the client displays actionable errors beneath matching named controls. Native required, type, range and pattern errors use the same inline presentation.
+- Registration and account email changes require a six-digit email code. Store only an HMAC digest, expire challenges after ten minutes, rate-limit requests and attempts, and consume the code inside the account create/update transaction. Existing accounts are treated as verified by migration default.
+- Deliver codes through configured SMTP. Never accept an account change or registration when delivery is unavailable, the code is invalid, expired, or already consumed.

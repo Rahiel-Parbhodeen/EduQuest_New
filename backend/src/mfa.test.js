@@ -9,6 +9,7 @@ describe('registration validation', () => {
     confirmPassword: 'StrongerPass12!',
     studyTrack: 'IT',
     studyYear: 1,
+    emailVerificationCode: '123456',
   };
   it('requires names, valid email, programme and matching strong passwords', () => {
     expect(registrationSchema.safeParse(valid).success).toBe(true);

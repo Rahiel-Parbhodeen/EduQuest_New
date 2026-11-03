@@ -1,18 +1,7 @@
 import React, { useEffect, useState } from 'react';
-const api = async (path, options = {}) => {
-  const response = await fetch('/api/v1' + path, {
-    credentials: 'include',
-    ...options,
-    headers:
-      options.body instanceof FormData
-        ? options.headers
-        : { 'content-type': 'application/json', ...options.headers },
-  });
-  const body = await response.json();
-  if (!response.ok)
-    throw Error(body.error?.message || 'The request could not be completed.');
-  return body;
-};
+import { apiRequest } from './validation.js';
+const api = (path, options = {}) =>
+  apiRequest(path, options, 'The request could not be completed.');
 const send = (path, body, method = 'POST') =>
   api(path, { method, body: JSON.stringify(body) });
 function useRecords(path, poll = false) {
@@ -106,6 +95,7 @@ export function LecturerApplication({ user }) {
             <label>
               Full name
               <input
+                name="fullName"
                 autoComplete="name"
                 required
                 maxLength={120}
@@ -198,6 +188,7 @@ function ReviewCard({ application, reload }) {
           <label>
             Review note
             <textarea
+              name="note"
               maxLength={1000}
               value={note}
               onChange={(e) => setNote(e.target.value)}
@@ -346,6 +337,7 @@ function UserCard({ account, currentId, reload }) {
       <label>
         Account role
         <select
+          name="role"
           disabled={own || busy}
           value={role}
           onChange={(e) => setRole(e.target.value)}
@@ -381,6 +373,7 @@ function UserCard({ account, currentId, reload }) {
             <label>
               New password
               <input
+                name="newPassword"
                 type="password"
                 autoComplete="new-password"
                 required
@@ -393,6 +386,7 @@ function UserCard({ account, currentId, reload }) {
             <label>
               Confirm new password
               <input
+                name="confirmNewPassword"
                 type="password"
                 autoComplete="new-password"
                 required
@@ -436,6 +430,7 @@ export function AdminUsers({ user }) {
           <label>
             Search users
             <input
+              name="search"
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -506,12 +501,14 @@ function RecordEditor({ row, fields, save, cancel }) {
           {label(key)}
           {typeof row[key] === 'boolean' ? (
             <input
+              name={key}
               type="checkbox"
               checked={Boolean(values[key])}
               onChange={(e) => change(key, e.target.checked)}
             />
           ) : key === 'study_track' ? (
             <select
+              name={key}
               value={values[key] || ''}
               onChange={(e) => change(key, e.target.value || null)}
             >
@@ -521,6 +518,7 @@ function RecordEditor({ row, fields, save, cancel }) {
             </select>
           ) : key === 'status' ? (
             <select
+              name={key}
               value={values[key]}
               onChange={(e) => change(key, e.target.value)}
             >
@@ -534,11 +532,13 @@ function RecordEditor({ row, fields, save, cancel }) {
               'next_activity',
             ].includes(key) ? (
             <textarea
+              name={key}
               value={values[key] ?? ''}
               onChange={(e) => change(key, e.target.value || null)}
             />
           ) : (
             <input
+              name={key}
               type={numberFields.has(key) ? 'number' : 'text'}
               step="any"
               value={values[key] ?? ''}
@@ -600,6 +600,7 @@ export function AdminDatabase() {
         <label>
           Database table
           <select
+            name="table"
             value={table}
             onChange={(e) => {
               setTable(e.target.value);

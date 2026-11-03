@@ -36,6 +36,7 @@ export const registrationSchema = profileSchema
     email: z.string().trim().email().max(254),
     password: strongPassword,
     confirmPassword: z.string(),
+    emailVerificationCode: z.string().regex(/^\d{6}$/, 'Enter the six-digit email code.'),
   })
   .strict()
   .refine((v) => v.password === v.confirmPassword, {

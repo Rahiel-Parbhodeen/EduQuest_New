@@ -28,9 +28,9 @@ it('requires surname and matching strong passwords before registration request',
     target: { value: 'Onlyfirst' },
   });
   fireEvent.submit(
-    screen.getByRole('button', { name: 'Register' }).closest('form'),
+    screen.getByRole('button', { name: 'Send verification code' }).closest('form'),
   );
-  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(await screen.findByText('Enter your first and last name without numbers.')).toBeTruthy();
   expect(fetch).not.toHaveBeenCalled();
   expect(screen.getByLabelText('Confirm password')).toBeTruthy();
   expect(screen.getByLabelText('Study programme')).toBeTruthy();
@@ -106,6 +106,12 @@ it('does not offer module join codes to students or lecturers', async () => {
   expect(screen.queryByText(/LEGACYCODE/)).toBeNull();
 });
 
+it('hides email changes from administrator profiles', () => {
+  render(<Profile user={{ role: 'admin', email: 'admin@example.com' }} onUpdate={() => {}} />);
+  expect(screen.queryByRole('heading', { name: 'Change email address' })).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Edit profile' })).toBeTruthy();
+});
+
 it('shows mismatch feedback without submitting a password change', async () => {
   const fetch = vi.fn();
   vi.stubGlobal('fetch', fetch);
@@ -122,7 +128,7 @@ it('shows mismatch feedback without submitting a password change', async () => {
   fireEvent.submit(
     screen.getByRole('button', { name: 'Change password' }).closest('form'),
   );
-  expect(await screen.findByRole('alert')).toHaveProperty(
+  expect(await screen.findByText('New passwords do not match.', { selector: 'small' })).toHaveProperty(
     'textContent',
     'New passwords do not match.',
   );

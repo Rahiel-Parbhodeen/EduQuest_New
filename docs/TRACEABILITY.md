@@ -215,3 +215,17 @@ FR-24 gate evidence: Timer Trivia contributes 10 engine/property tests, 11 API i
 
 ## Student and lecturer updates (2026-11-02)
 Year-three module/resource views use the existing catalogue, without deleting other years. Lecturer module names are validated by year; internal codes are generated for compatibility. Private document access checks enrolment and group membership. Student direct messaging checks roles, recipients, profanity and rate limits. Meetings require English/Afrikaans/Zulu and a future timestamp. Existing records are preserved.
+
+## Student dashboard quizzes â€” Milestone 1 (2026-11-03)
+
+| Requirement | Implementation | Evidence |
+| --- | --- | --- |
+| Show published quizzes on the student dashboard | `GET /api/v1/student/quizzes`; student-only enrolled-module query; dashboard quiz list with direct open action | API inclusion/role checks; frontend display/open/empty-state tests |
+
+## Validation and email verification � 2026-11-03
+
+| Requirement | Implementation | Evidence |
+| --- | --- | --- |
+| Show validation feedback beneath the specific input | Native constraint validation handler and server Zod field paths; forms have stable names | `validation.js`; registration/profile/API validation tests |
+| Prevent registration until email is verified | Short-lived, single-use, attempt-limited HMAC challenge with SMTP delivery; consume in registration transaction | `email-verification.test.js`; migration 019 |
+| Verify new email before account email change | Authenticated current-password check, unique-address check, delivered code, transactional update and session revocation | `experience.test.js`; executable route authorization matrix |

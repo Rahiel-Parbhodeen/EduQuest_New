@@ -14,6 +14,7 @@ export default defineConfig({
       'backend/tests/password-curriculum.test.js',
       'backend/tests/admin.test.js',
       'backend/tests/api.test.js',
+      'backend/tests/email-verification.test.js',
       'backend/tests/authorization-matrix.test.js',
       'backend/tests/database.invariants.test.js',
       'backend/tests/infected-api.test.js',

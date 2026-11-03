@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcryptjs';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { totp } from '../src/mfa.js';
+import { registerVerifiedStudent } from './helpers/email-verification.js';
 process.env.NODE_ENV = 'development';
 process.env.COOKIE_SECURE = 'false';
 process.env.AUTH_RATE_LIMIT = '1000';
@@ -69,7 +70,7 @@ describe('rebuilt student experience', () => {
             .send({ ...registration, ...patch })
         ).status,
       ).toBe(400);
-    const r = await student.post('/api/v1/auth/register').send(registration);
+    const r = await registerVerifiedStudent(student, registration);
     expect(r.status).toBe(201);
     studentId = r.body.user.user_id;
     expect(
@@ -106,7 +107,7 @@ describe('rebuilt student experience', () => {
     );
   });
   it('blocks join-code bypass and protects group updates', async () => {
-    await outsider.post('/api/v1/auth/register').send({
+    await registerVerifiedStudent(outsider, {
       ...registration,
       email: 'rebuild-other@example.com',
       studyTrack: 'Business',

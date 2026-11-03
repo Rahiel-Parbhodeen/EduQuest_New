@@ -3,6 +3,7 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { testEmailCode } from './helpers/email-verification.js';
 
 process.env.NODE_ENV = 'development';
 process.env.COOKIE_SECURE = 'false';
@@ -112,6 +113,17 @@ const bodies = {
     password: users.student.password,
     fullName: 'New Matrix Student',
   }),
+  'POST /api/v1/auth/email-verification/request': () => ({
+    email: `matrix-code-${Date.now()}@example.com`,
+  }),
+  'POST /api/v1/profile/email/verification/request': () => ({
+    currentPassword: users.student.password,
+    newEmail: `matrix-change-${Date.now()}@example.com`,
+  }),
+  'POST /api/v1/profile/email/verification/confirm': () => ({
+    newEmail: `matrix-confirm-${Date.now()}@example.com`,
+    emailVerificationCode: '000000',
+  }),
   'POST /api/v1/auth/login': () => ({
     email: users.student.email,
     password: users.student.password,
@@ -199,6 +211,9 @@ const bodies = {
 const specs = {
   'GET /health': ['/health', null],
   'POST /api/v1/auth/register': ['/api/v1/auth/register', null],
+  'POST /api/v1/auth/email-verification/request': ['/api/v1/auth/email-verification/request', null],
+  'POST /api/v1/profile/email/verification/request': ['/api/v1/profile/email/verification/request', 'student'],
+  'POST /api/v1/profile/email/verification/confirm': ['/api/v1/profile/email/verification/confirm', 'student'],
   'POST /api/v1/auth/login': ['/api/v1/auth/login', null],
   'POST /api/v1/auth/logout': ['/api/v1/auth/logout', 'lecturer'],
   'GET /api/v1/auth/me': ['/api/v1/auth/me', 'student'],
@@ -787,6 +802,24 @@ async function assertRoute(route, [template, successRole]) {
   )
     expect(invalid.status).toBeGreaterThanOrEqual(200);
   else expect([400, 404, 422], `${route} validation`).toContain(invalid.status);
+  if (route === 'POST /api/v1/auth/register') {
+    const codeRequest = await request(app)
+      .post('/api/v1/auth/email-verification/request')
+      .send({ email: body.email });
+    expect(codeRequest.status).toBe(200);
+    if (route === 'POST /api/v1/auth/register')
+      body.emailVerificationCode = testEmailCode(body.email);
+  }
+  if (route === 'POST /api/v1/profile/email/verification/confirm') {
+    const agent = await login(successRole);
+    const requested = await agent.post('/api/v1/profile/email/verification/request').send({
+      currentPassword: users.student.password,
+      newEmail: body.newEmail,
+    });
+    expect(requested.status).toBe(200);
+    body.emailVerificationCode = testEmailCode(body.newEmail);
+    fixture.studentReplacementEmail = body.newEmail;
+  }
   const success = await send(
     successRole ? await login(successRole) : request(app),
     method,
@@ -795,13 +828,15 @@ async function assertRoute(route, [template, successRole]) {
   );
   expect(success.status, `${route} success`).toBeGreaterThanOrEqual(200);
   expect(success.status, `${route} success`).toBeLessThan(300);
+  if (route === 'POST /api/v1/profile/email/verification/confirm')
+    users.student.email = fixture.studentReplacementEmail;
   await assertNoSensitive(success, route);
 }
 
 describe('executable route authorization matrix', () => {
   beforeAll(createFixture);
   it('derives every route and requires a concrete assertion body', () => {
-    expect(routeInventory.length).toBe(70);
+    expect(routeInventory.length).toBe(78);
     const added = [
       'POST /api/v1/lecturer-applications',
       'GET /api/v1/lecturer-applications/me',
@@ -826,6 +861,11 @@ describe('executable route authorization matrix', () => {
       'POST /api/v1/curriculum',
       'GET /api/v1/study-groups',
       'PUT /api/v1/study-groups/:id',
+      'GET /api/v1/resources/:id/file',
+      'GET /api/v1/students/directory',
+      'GET /api/v1/messages/:id',
+      'POST /api/v1/messages/:id',
+      'GET /api/v1/student/quizzes',
     ];
     expect(Object.keys(authorizationMatrix).sort()).toEqual(
       [...routeInventory].sort(),
